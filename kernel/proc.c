@@ -259,6 +259,9 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // 添加复制逻辑
+  u2kvmcopy(p->pagetable, p->kernel_pagetable, 0, p->sz);
+  
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -281,11 +284,16 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if(PGROUNDUP(sz + n) >= PLIC) {
+      return -1;
+    }
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    u2kvmcopy(p->pagetable, p->kernel_pagetable, sz - n, sz);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    // u2kvmcopy(p->pagetable, p->kernel_pagetable, sz - n, sz);
   }
   p->sz = sz;
   return 0;
@@ -314,6 +322,9 @@ fork(void)
   np->sz = p->sz;
 
   np->parent = p;
+
+  // 添加复制逻辑
+  u2kvmcopy(np->pagetable, np->kernel_pagetable, 0, np->sz);
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
