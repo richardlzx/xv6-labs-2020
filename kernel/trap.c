@@ -67,6 +67,34 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    uint64 va = r_stval();
+    pte_t *pte;
+    uint64 pa;
+    uint flags;
+    char *mem;
+    if(va >= MAXVA)
+      p->killed = 1;
+    if((pte = walk(p->pagetable, va, 0)) != 0 && (*pte & PTE_V) != 0 && (PTE_FLAGS(*pte) & PTE_RSW)) {
+      pa = PTE2PA(*pte);
+      flags = PTE_FLAGS(*pte);
+      if(read_ref(pa) == 1) {
+      flags = (flags & (~PTE_RSW)) | PTE_W;
+      *pte = PA2PTE(pa) | flags;
+      } else {
+        if((mem = kalloc()) == 0) {
+          p->killed = 1;
+        } else {
+          memmove(mem, (char*)pa, PGSIZE);
+          flags = (flags & (~PTE_RSW)) | PTE_W;
+          *pte = PA2PTE(mem) | flags;
+          // 出现lost page是因为之前释放pa用的sub_ref(pa),而没有用kfree(pa);
+          kfree((void *)pa);
+        }
+      }
+    } else {
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

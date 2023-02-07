@@ -5,7 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "spinlock.h"
+#include "proc.h"
 /*
  * the kernel's page table.
  */
@@ -311,7 +312,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -320,13 +321,18 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if(flags & PTE_W) {
+      *pte = (*pte & (~PTE_W)) | PTE_RSW;
+      flags = PTE_FLAGS(*pte);
+    }
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      // uvmunmap(new, 0, i / PGSIZE, 1);
       goto err;
     }
+    add_ref(pa);
   }
   return 0;
 
@@ -355,8 +361,33 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  pte_t *pte;
+  uint flags;
+  uint64 pa;
+  char *mem;
+  // struct proc *p = myproc();
   while(len > 0){
+    // pte = walk(pagetable, dstva, 0);
+    if(dstva >= MAXVA)
+      return -1;
+    if((pte = walk(pagetable, dstva, 0)) != 0 && (*pte & PTE_V) != 0 && (PTE_FLAGS(*pte) & PTE_RSW)) {
+      pa = PTE2PA(*pte);
+      flags = PTE_FLAGS(*pte);
+      if(read_ref(pa) == 1) {
+      flags = (flags & (~PTE_RSW)) | PTE_W;
+      *pte = PA2PTE(pa) | flags;
+      } else {
+        if((mem = kalloc()) == 0) {
+          return -1;
+        } else {
+          memmove(mem, (char*)pa, PGSIZE);
+          flags = (flags & (~PTE_RSW)) | PTE_W;
+          *pte = PA2PTE(mem) | flags;
+          // 出现lost page是因为之前释放pa用的sub_ref(pa),而没有用kfree(pa);
+          kfree((void *)pa);
+        }
+      }
+    }
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
